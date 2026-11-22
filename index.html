@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amigo invisible</title>
+<style>
+:root{
+  --bg:#faf7f2; --card:#ffffff; --ink:#1f2421; --muted:#6b726d; --line:#e6e0d6;
+  --accent:#b3261e; --accent-ink:#ffffff; --ok:#1d7a46; --soft:#f3eee5;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#14181a; --card:#1d2326; --ink:#eef1ee; --muted:#9aa39d; --line:#2c3438;
+    --accent:#e0554b; --accent-ink:#1a0b09; --ok:#4cc58a; --soft:#242b2f; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+main{max-width:560px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:26px;margin:8px 0 4px}
+h2{font-size:18px;margin:0 0 10px}
+p{margin:0 0 12px}
+.muted{color:var(--muted);font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
+label{display:block;font-weight:600;font-size:14px;margin:12px 0 4px}
+input,textarea,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+  background:var(--bg);color:var(--ink);font:inherit}
+textarea{min-height:110px;resize:vertical}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:11px 16px;cursor:pointer;
+  background:var(--accent);color:var(--accent-ink)}
+button.sec{background:var(--soft);color:var(--ink);border:1px solid var(--line)}
+button.full{width:100%;margin-top:16px;padding:13px}
+button:disabled{opacity:.6;cursor:default}
+.err{color:var(--accent);font-weight:600;margin-top:10px}
+.person{display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line)}
+.person:first-child{border-top:0}
+.person .name{flex:1;font-weight:600;overflow-wrap:anywhere}
+.person button{padding:8px 12px;font-size:14px}
+.tick{color:var(--ok);font-weight:700;min-width:18px;text-align:center}
+.big{font-size:34px;font-weight:800;text-align:center;margin:18px 0;overflow-wrap:anywhere}
+.center{text-align:center}
+.emoji{font-size:54px;text-align:center;margin-top:20px}
+.info{background:var(--soft);border-radius:10px;padding:10px 12px;font-size:14px;color:var(--muted)}
+.details{border-top:1px solid var(--line);margin-top:14px;padding-top:12px;font-size:15px}
+</style>
+</head>
+<body>
+<main id="app"></main>
+
+<script>
+"use strict";
+const app = document.getElementById("app");
+const te = new TextEncoder(), td = new TextDecoder();
+
+/* ---------- utilidades ---------- */
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const keyOf = s => s.trim().toLowerCase();
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+
+function toB64u(buf){
+  let s=""; for(const x of new Uint8Array(buf)) s+=String.fromCharCode(x);
+  return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+function fromB64u(s){
+  s=s.replace(/-/g,"+").replace(/_/g,"/"); while(s.length%4) s+="=";
+  const r=atob(s), u=new Uint8Array(r.length); for(let i=0;i<r.length;i++) u[i]=r.charCodeAt(i); return u;
+}
+
+/* Cifrado AES-GCM: el mensaje de cada persona viaja cifrado dentro de su enlace. */
+async function seal(obj){
+  const key=crypto.getRandomValues(new Uint8Array(32));
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const k=await crypto.subtle.importKey("raw",key,"AES-GCM",false,["encrypt"]);
+  const ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},k,te.encode(JSON.stringify(obj)));
+  return toB64u(iv)+"."+toB64u(ct)+"."+toB64u(key);
+}
+async function unseal(token){
+  const [iv,ct,key]=token.split(".").map(fromB64u);
+  const k=await crypto.subtle.importKey("raw",key,"AES-GCM",false,["decrypt"]);
+  const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv},k,ct);
+  return JSON.parse(td.decode(pt));
+}
+
+/* ---------- sorteo ---------- */
+function drawAssignments(names, forbidden){
+  const n=names.length, order=shuffle([...Array(n).keys()]);
+  const used=new Array(n).fill(false), res=new Array(n).fill(-1);
+  let steps=0;
+  const ok=(g,r)=>g!==r && !forbidden.has(keyOf(names[g])+"\u0000"+keyOf(names[r]));
+  function go(i){
+    if(i===n) return true;
+    if(++steps>300000) return false;
+    const g=order[i];
+    const opts=shuffle([...Array(n).keys()].filter(r=>!used[r]&&ok(g,r)));
+    for(const r of opts){ used[r]=true; res[g]=r; if(go(i+1)) return true; used[r]=false; res[g]=-1; }
+    return false;
+  }
+  return go(0)?res:null;
+}
+
+/* ---------- vista: revelar resultado ---------- */
+function viewReveal(token, onBack){
+  app.innerHTML = `
+    <div class="emoji">🎁</div>
+    <h1 class="center">Amigo invisible</h1>
+    <p class="center muted">Tienes un mensaje secreto. Asegúrate de que nadie mira tu pantalla.</p>
+    <button class="full" id="go">Descubrir a quién le regalo</button>
+    ${onBack?'<button class="full sec" id="back">Volver</button>':""}
+    <div id="out"></div>`;
+  if(onBack) document.getElementById("back").onclick=onBack;
+  document.getElementById("go").onclick = async () => {
+    const out=document.getElementById("out");
+    try{
+      const d=await unseal(token);
+      const lines=[];
+      if(d.b) lines.push(`<p><strong>Presupuesto:</strong> ${esc(d.b)}</p>`);
+      if(d.d) lines.push(`<p><strong>Fecha:</strong> ${esc(d.d)}</p>`);
+      if(d.n) lines.push(`<p>${esc(d.n)}</p>`);
+      out.innerHTML = `
+        <div class="card center">
+          ${d.e?`<p class="muted">${esc(d.e)}</p>`:""}
+          <p>Hola <strong>${esc(d.g)}</strong>, le regalas a:</p>
+          <div class="big">${esc(d.r)}</div>
+          <p class="muted">Guárdalo y no se lo digas a nadie 🤫</p>
+          ${lines.length?`<div class="details">${lines.join("")}</div>`:""}
+        </div>`;
+      document.getElementById("go").style.display="none";
+    }catch(e){
+      out.innerHTML=`<p class="err center">Este enlace no es válido o está incompleto. Pide que te lo reenvíen.</p>`;
+    }
+  };
+}
+
+/* ---------- vista: organizador ---------- */
+function viewSetup(prefill){
+  const v=prefill||{};
+  app.innerHTML = `
+    <div class="emoji">🎁</div>
+    <h1 class="center">Amigo invisible</h1>
+    <p class="center muted">El sorteo se hace en tu móvil y cada persona recibe un enlace secreto. Tú no ves quién regala a quién.</p>
+
+    <div class="card">
+      <h2>1. Participantes</h2>
+      <label for="names">Nombres (uno por línea, mínimo 3)</label>
+      <textarea id="names" placeholder="Ana&#10;Luis&#10;Marta&#10;Pablo">${esc(v.names||"")}</textarea>
+      <label for="excl">Quién no puede regalarse entre sí (opcional)</label>
+      <textarea id="excl" style="min-height:70px" placeholder="Ana, Luis&#10;(una línea por pareja o grupo, separados por comas)">${esc(v.excl||"")}</textarea>
+      <label for="me">Yo también participo como</label>
+      <select id="me"><option value="">No participo</option></select>
+    </div>
+
+    <div class="card">
+      <h2>2. Detalles (opcional)</h2>
+      <label for="ev">Nombre del evento</label>
+      <input id="ev" placeholder="Amigo invisible Navidad" value="${esc(v.ev||"")}">
+      <div class="row">
+        <div><label for="bud">Presupuesto</label><input id="bud" placeholder="15 €" value="${esc(v.bud||"")}"></div>
+        <div><label for="dat">Fecha de entrega</label><input id="dat" placeholder="24 de diciembre" value="${esc(v.dat||"")}"></div>
+      </div>
+      <label for="note">Nota</label>
+      <input id="note" placeholder="Regalo envuelto, con una pista..." value="${esc(v.note||"")}">
+    </div>
+
+    <button class="full" id="draw">Hacer el sorteo</button>
+    <div class="err" id="err"></div>`;
+
+  const namesEl=document.getElementById("names"), meEl=document.getElementById("me");
+  const parse=()=>namesEl.value.split("\n").map(s=>s.trim()).filter(Boolean);
+  const refreshMe=()=>{
+    const cur=meEl.value;
+    meEl.innerHTML='<option value="">No participo</option>'+parse().map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    meEl.value=[...meEl.options].some(o=>o.value===cur)?cur:(v.me||"");
+  };
+  namesEl.addEventListener("input",refreshMe); refreshMe();
+
+  document.getElementById("draw").onclick = async () => {
+    const err=document.getElementById("err"); err.textContent="";
+    const names=parse();
+    const seen=new Set();
+    for(const n of names){ if(seen.has(keyOf(n))){ err.textContent=`El nombre "${n}" está repetido. Añade una inicial para diferenciarlos.`; return; } seen.add(keyOf(n)); }
+    if(names.length<3){ err.textContent="Necesitas al menos 3 participantes."; return; }
+
+    const forbidden=new Set();
+    for(const line of document.getElementById("excl").value.split("\n")){
+      const grp=line.split(",").map(s=>s.trim()).filter(Boolean);
+      if(!grp.length) continue;
+      for(const g of grp){ if(!seen.has(keyOf(g))){ err.textContent=`En las exclusiones aparece "${g}", que no está en la lista de participantes.`; return; } }
+      for(const a of grp) for(const b of grp) if(keyOf(a)!==keyOf(b)) forbidden.add(keyOf(a)+"\u0000"+keyOf(b));
+    }
+
+    const res=drawAssignments(names,forbidden);
+    if(!res){ err.textContent="Con esas exclusiones no es posible hacer el sorteo. Quita alguna e inténtalo de nuevo."; return; }
+
+    const state={
+      ev:document.getElementById("ev").value.trim(), bud:document.getElementById("bud").value.trim(),
+      dat:document.getElementById("dat").value.trim(), note:document.getElementById("note").value.trim(),
+      me:meEl.value, names:namesEl.value, excl:document.getElementById("excl").value
+    };
+    const people=[];
+    for(let i=0;i<names.length;i++){
+      const token=await seal({g:names[i],r:names[res[i]],e:state.ev,b:state.bud,d:state.dat,n:state.note});
+      people.push({name:names[i],token,sent:false});
+    }
+    // Las asignaciones ya solo existen cifradas dentro de los enlaces.
+    viewResult(people,state);
+  };
+}
+
+function viewResult(people,state){
+  const base=location.href.split("#")[0];
+  const msgFor=p=>{
+    let m=`🎁 ${state.ev||"Amigo invisible"}\n\nHola ${p.name}, ya está hecho el sorteo. Abre tu enlace secreto para saber a quién le regalas (no se lo cuentes a nadie):\n${base}#${p.token}`;
+    if(state.bud) m+=`\n\nPresupuesto: ${state.bud}`;
+    if(state.dat) m+=`\nFecha: ${state.dat}`;
+    return m;
+  };
+  const mine=state.me?people.find(p=>p.name===state.me):null;
+  const others=people.filter(p=>p!==mine);
+
+  app.innerHTML = `
+    <div class="emoji">✅</div>
+    <h1 class="center">Sorteo hecho</h1>
+    <p class="center muted">Envía a cada persona su enlace. La pantalla no muestra quién regala a quién.</p>
+    ${mine?`<div class="card"><h2>Tu resultado</h2><button class="full sec" id="mine" style="margin-top:0">Ver el mío</button></div>`:""}
+    <div class="card" id="list"></div>
+    <div class="info">Cada enlace lleva el resultado cifrado y solo funciona con ese enlace completo. Si cierras esta página no podrás volver a ver los enlaces, así que envíalos ahora. Si haces otro sorteo, los enlaces antiguos dejan de ser válidos para el grupo.</div>
+    <button class="full sec" id="again">Hacer otro sorteo</button>`;
+
+  if(mine) document.getElementById("mine").onclick=()=>viewReveal(mine.token,()=>viewResult(people,state));
+  document.getElementById("again").onclick=()=>{ if(confirm("¿Hacer otro sorteo? Los enlaces ya enviados dejarán de valer.")) viewSetup(state); };
+
+  const list=document.getElementById("list");
+  list.innerHTML=`<h2>Enviar enlaces</h2>`;
+  for(const p of others){
+    const row=document.createElement("div"); row.className="person";
+    row.innerHTML=`<span class="tick"></span><span class="name">${esc(p.name)}</span>
+      <button class="sec" data-a="copy">Copiar</button><button data-a="wa">WhatsApp</button>`;
+    const tick=row.querySelector(".tick");
+    const mark=()=>{ p.sent=true; tick.textContent="✓"; };
+    row.querySelector('[data-a="wa"]').onclick=()=>{ window.open("https://wa.me/?text="+encodeURIComponent(msgFor(p)),"_blank","noopener"); mark(); };
+    row.querySelector('[data-a="copy"]').onclick=async e=>{
+      const btn=e.currentTarget, txt=msgFor(p);
+      try{ await navigator.clipboard.writeText(txt); }
+      catch{ const t=document.createElement("textarea"); t.value=txt; t.style.position="fixed"; t.style.opacity="0"; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
+      btn.textContent="¡Copiado!"; setTimeout(()=>btn.textContent="Copiar",1500); mark();
+    };
+    if(p.sent) tick.textContent="✓";
+    list.appendChild(row);
+  }
+}
+
+/* ---------- arranque ---------- */
+const hash=location.hash.slice(1);
+if(!window.crypto||!crypto.subtle){
+  app.innerHTML='<p class="err">Este navegador no admite el cifrado necesario. Abre la página en Chrome, Safari o Firefox actualizados (con https).</p>';
+}else if(hash){
+  viewReveal(hash);
+}else{
+  viewSetup();
+}
+</script>
+</body>
+</html>
